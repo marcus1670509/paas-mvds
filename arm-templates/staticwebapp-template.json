@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "staticSiteName": {
+      "type": "string",
+      "metadata": { "description": "Nome do Static Web App (único dentro do resource group)" }
+    },
+    "location": {
+      "type": "string",
+      "allowedValues": [ "westus2", "centralus", "eastus2", "westeurope", "eastasia" ],
+      "metadata": { "description": "Regiões que aceitam Static Web Apps" }
+    },
+    "skuName": {
+      "type": "string",
+      "defaultValue": "Standard",
+      "allowedValues": [ "Free", "Standard" ]
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/staticSites",
+      "apiVersion": "2022-09-01",
+      "name": "[parameters('staticSiteName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "[parameters('skuName')]",
+        "tier": "[parameters('skuName')]"
+      },
+      "properties": {
+        "stagingEnvironmentPolicy": "Disabled",
+        "allowConfigFileUpdates": true
+      }
+    }
+  ],
+  "outputs": {
+    "siteUrl": {
+      "type": "string",
+      "value": "[concat('https://', reference(resourceId('Microsoft.Web/staticSites', parameters('staticSiteName'))).defaultHostname)]"
+    }
+  }
+}
