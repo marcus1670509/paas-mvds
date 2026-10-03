@@ -1,0 +1,87 @@
+trigger:
+- main
+
+pool:
+  name: Default # 🔁 Nome do agent pool
+  demands:
+    - Agent.Name -equals LML001  # 🔁 Força o uso do agente específico - informar o nome do Agente criado
+
+variables:
+  resourceGroupName: rg-iac-web-paas01
+  location: westus2              # Static Web Apps só aceita: westus2, centralus, eastus2, westeurope, eastasia
+  staticSiteName: swa-iac-paas   # Único só dentro do resource group (a URL pública é gerada pela Azure)
+  skuName: Free                  # Standard = pago (~US$ 9/mês) | Free = gratuito
+  templateFile: arm-templates/staticwebapp-template.json
+  parametersFile: arm-templates/staticwebapp-parameters.json
+  azureConnection: SCll01        # 🔁 informar o nome do Service Connection criado
+
+stages:
+- stage: DeployInfrastructure
+  displayName: 'Provisionar Static Web App'
+  jobs:
+  - job: ARM_Deployment
+    timeoutInMinutes: 20
+    steps:
+    - task: AzureResourceManagerTemplateDeployment@3
+      displayName: 'Deploy ARM Template (Static Web App)'
+      inputs:
+        deploymentScope: 'Resource Group'
+        azureResourceManagerConnection: '$(azureConnection)'
+        subscriptionId: '744c9ea4-6ef7-4766-bac6-125c53ef07f5' # 🔁 substituir pelo ID da subscription Azure
+        action: 'Create Or Update Resource Group'
+        resourceGroupName: '$(resourceGroupName)'
+        location: '$(location)'
+        templateLocation: 'Linked artifact'
+        csmFile: '$(templateFile)'
+        csmParametersFile: '$(parametersFile)'
+        overrideParameters: '-staticSiteName $(staticSiteName) -location $(location) -skuName $(skuName)'
+        deploymentMode: 'Incremental'
+
+- stage: DeployApp
+  displayName: 'Publicar site'
+  dependsOn: DeployInfrastructure
+  jobs:
+  - job: Publish_HTML
+    timeoutInMinutes: 20
+    steps:
+    # Obtém o token de deploy do Static Web App (fica como variável secreta, não aparece no log)
+    - task: AzureCLI@2
+      displayName: 'Obter token de deploy'
+      inputs:
+        azureSubscription: '$(azureConnection)'
+        scriptType: 'ps'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          $token = az staticwebapp secrets list --name $(staticSiteName) --resource-group $(resourceGroupName) --query properties.apiKey -o tsv
+          if (-not $token) { Write-Error 'Não foi possível obter o token de deploy.'; exit 1 }
+          Write-Host "##vso[task.setvariable variable=swaToken;issecret=true]$token"
+
+    # Garante o Node.js no agente (necessário para a SWA CLI)
+    - task: UseNode@1
+      displayName: 'Instalar Node.js'
+      inputs:
+        version: '22.x'
+
+    # Publica a pasta src (index.html) no ambiente de produção
+    # (a tarefa AzureStaticWebApp@0 usa Docker/Linux e não roda em agente Windows, por isso a SWA CLI)
+    - task: PowerShell@2
+      displayName: 'Publicar src no Static Web App'
+      inputs:
+        targetType: 'inline'
+        pwsh: false
+        workingDirectory: '$(System.DefaultWorkingDirectory)'
+        script: |
+          npx --yes @azure/static-web-apps-cli@latest deploy ./src --env production --deployment-token $env:SWA_TOKEN
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      env:
+        SWA_TOKEN: $(swaToken)
+
+    - task: AzureCLI@2
+      displayName: 'Mostrar URL do site'
+      inputs:
+        azureSubscription: '$(azureConnection)'
+        scriptType: 'ps'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          $hostName = az staticwebapp show --name $(staticSiteName) --resource-group $(resourceGroupName) --query defaultHostname -o tsv
+          Write-Host "Site publicado em: https://$hostName"
